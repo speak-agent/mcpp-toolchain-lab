@@ -42,7 +42,7 @@ lab_summary() {
     fi
 }
 
-# Verdicts. A case calls exactly one of pass, fail, skip, recorded; each prints one line
+# Verdicts. A case calls exactly one of pass, fail, skip; each prints one line
 # that begins with `VERDICT` so that a log can be searched for them, and the
 # line is repeated in the job summary.
 CASE="${CASE:-lab}"
@@ -52,10 +52,6 @@ verdict() {
     lab_summary "- \`${CASE}\` on \`${LAB_PLATFORM}\`: **$1** - $2"
 }
 pass() { verdict PASS "$*"; exit 0; }
-# recorded: the property the case looks for is absent, and the case's own brief
-# says to record what is present instead of asserting the absent property. Only
-# lock-local ends this way; everything it records is printed above the verdict.
-recorded() { verdict RECORDED "$*"; exit 0; }
 skip() { verdict SKIP "$*"; exit 0; }
 # A failure whose cause is a tracked external one is a known-red outcome, and
 # only when the output that failed carries the mark of that cause:
@@ -228,12 +224,15 @@ lld_name() {
     if [ "$LAB_OS" = macos ]; then echo ld64.lld; else echo ld.lld; fi
 }
 
-# make_ld_wrapper <tree> <dest>: a script that execs the tree's lld.
+# make_ld_wrapper <tree> <dest>: a script that execs the tree's lld, and appends
+# a line to <dest>.ran each time it runs, so that a case can tell whether the
+# linker it stated took part in the link.
 make_ld_wrapper() {
     local lld
     lld="$(lld_name)"
     [ -e "$1/bin/$lld" ] || return 1
-    printf '#!/bin/sh\nexec "%s/bin/%s" "$@"\n' "$1" "$lld" > "$2"
+    rm -f "$2.ran"
+    printf '#!/bin/sh\necho ran >> "%s.ran"\nexec "%s/bin/%s" "$@"\n' "$2" "$1" "$lld" > "$2"
     chmod +x "$2"
 }
 

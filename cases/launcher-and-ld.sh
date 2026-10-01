@@ -29,7 +29,17 @@ grep -E '^ldflags *=' "$ninja" | head -1 | cut -c1-1500 | sed 's/^/     /' || tr
 grep -Eq "^cxx *= /usr/bin/env $(regex_escape "$LAB_TREE")/bin/clang\+\+" "$ninja" \
     || fail "build.ninja does not put /usr/bin/env in front of $LAB_TREE/bin/clang++ (see the cxx lines above)"
 ok "build.ninja has the launcher in front of the compiler"
-grep -Fq -- "--ld-path=$wrapper" "$ninja" || fail "build.ninja does not name --ld-path=$wrapper"
+
+# The stated linker: named in the link options, and run by the link. Both are
+# looked at before either is asserted, so that a failure reports what it saw.
+named=no; ran=no
+grep -Fq -- "--ld-path=$wrapper" "$ninja" && named=yes
+[ -s "$wrapper.ran" ] && ran=yes
+echo "-- --ld-path=$wrapper in the link options: $named"
+echo "-- the linker wrapper ran during the link: $ran"
+[ "$named" = yes ] || fail "build.ninja does not name --ld-path=$wrapper (the wrapper ran during the link: $ran)"
 ok "build.ninja names --ld-path= with the wrapper"
+[ "$ran" = yes ] || fail "the linker wrapper $wrapper did not run during the link"
+ok "the linker wrapper ran during the link"
 run_app
 pass "launcher /usr/bin/env precedes the compiler and --ld-path names the wrapper; the program runs"
