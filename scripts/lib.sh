@@ -117,8 +117,8 @@ refuse() {
     if has "$1"; then fail "$2 -- a line of the output matches: $1"; else ok "$2"; fi
 }
 # need_success / need_refusal: the exit status of the last `run`.
-need_success() { [ "$rc" = 0 ] && ok "$1" || fail "$1 -- mcpp exited $rc"; }
-need_refusal() { [ "$rc" != 0 ] && ok "$1 (exit $rc)" || fail "$1 -- mcpp exited 0"; }
+need_success() { if [ "$rc" = 0 ]; then ok "$1"; else fail "expected: $1; mcpp exited $rc"; fi; }
+need_refusal() { if [ "$rc" != 0 ]; then ok "$1 (exit $rc)"; else fail "expected: $1; mcpp exited 0"; fi; }
 
 # regex_escape <text>: the text, escaped for an extended regular expression.
 regex_escape() { printf '%s' "$1" | sed -e 's#[][\.*^$+?(){}|/]#\\&#g'; }

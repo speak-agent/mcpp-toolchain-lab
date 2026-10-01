@@ -24,8 +24,8 @@ ninja="$(find target -name build.ninja | head -1)"
 [ -n "$ninja" ] || fail "no build.ninja under target/"
 echo "-- compiler lines of $ninja:"
 grep -nE '^(cxx|cc) *=' "$ninja" | sed 's/^/     /' || true
-echo "-- link options of $ninja that this case is about:"
-grep -E '^ldflags *=' "$ninja" | head -1 | tr ' ' '\n' | grep -E '^(--no-default-config|-fuse-ld=|--ld-path=)' | sed 's/^/     /' || true
+echo "-- the link options of $ninja, as written (ldflags, with the build directory left out):"
+grep -E '^ldflags *=' "$ninja" | head -1 | cut -c1-1500 | sed 's/^/     /' || true
 grep -Eq "^cxx *= /usr/bin/env $(regex_escape "$LAB_TREE")/bin/clang\+\+" "$ninja" \
     || fail "build.ninja does not put /usr/bin/env in front of $LAB_TREE/bin/clang++ (see the cxx lines above)"
 ok "build.ninja has the launcher in front of the compiler"
