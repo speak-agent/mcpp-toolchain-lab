@@ -216,8 +216,12 @@ jobs:
             echo "- refs: \`$(tr '\n' ' ' < refs.env)\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Restored, and saved right after the toolchain tree and before any case:
+      # toolchain-phase-lab-lld edits the managed payload for the length of its
+      # run, and what is cached must be the payload as installed.
       - name: Restore the mcpp home
-        uses: actions/cache@v4
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: .mcpp-home
           key: lab-v1-xcode-27-${{ hashFiles('refs.env') }}
@@ -255,6 +259,13 @@ jobs:
         id: tree
         run: bash scripts/make-tree.sh
 
+      - name: Save the mcpp home
+        if: ${{ success() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .mcpp-home
+          key: lab-v1-xcode-27-${{ hashFiles('refs.env') }}
+
       - name: "case: path-llvm"
         if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
         env:
@@ -270,3 +281,11 @@ jobs:
           LAB_KNOWN_RED: mcpp-community/mcpp#669
           LAB_KNOWN_RED_MARK: arm64e.x1
         run: bash scripts/case.sh toolchain-phase
+
+      # An extra case, only when the tree is the lab asset: the toolchain-phase
+      # case with the bootstrap's lld replaced by the lab's lld for its duration,
+      # which removes the one cause of the KNOWN-RED above and shows whether the
+      # toolchain phase works on the image once the bootstrap can link.
+      - name: "case: toolchain-phase-lab-lld"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh toolchain-phase-lab-lld
