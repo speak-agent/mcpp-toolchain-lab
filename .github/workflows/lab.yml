@@ -29,8 +29,36 @@ env:
   LAB_LLVM_SPEC: llvm@22.1.8
 
 jobs:
+  # THE COMMITS A RUN MEASURES are resolved once, here, from the references in
+  # refs.env, and every job checks out those commits: a branch under review moves
+  # while a run is going, and two jobs of one run must not measure two states.
+  refs:
+    name: refs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mcpp_sha: ${{ steps.resolve.outputs.mcpp_sha }}
+      plugins_sha: ${{ steps.resolve.outputs.plugins_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the references under test
+        id: resolve
+        run: |
+          set -euo pipefail
+          . ./refs.env
+          cat refs.env
+          mcpp_sha=$(git ls-remote https://github.com/mcpp-community/mcpp.git "refs/heads/$MCPP_REF" | cut -f1)
+          plugins_sha=$(git ls-remote https://github.com/mcpp-community/mcpp-plugins.git "refs/heads/$PLUGINS_REF" | cut -f1)
+          [ -n "$mcpp_sha" ] || { echo "::error::mcpp-community/mcpp has no branch $MCPP_REF"; exit 1; }
+          [ -n "$plugins_sha" ] || { echo "::error::mcpp-community/mcpp-plugins has no branch $PLUGINS_REF"; exit 1; }
+          echo "mcpp $MCPP_REF -> $mcpp_sha"
+          echo "mcpp-plugins $PLUGINS_REF -> $plugins_sha"
+          echo "mcpp_sha=$mcpp_sha" >> "$GITHUB_OUTPUT"
+          echo "plugins_sha=$plugins_sha" >> "$GITHUB_OUTPUT"
+
   lab:
     name: ${{ matrix.name }}
+    needs: refs
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 150
     strategy:
@@ -48,23 +76,21 @@ jobs:
       LAB_PLATFORM: ${{ matrix.name }}
       MCPP_HOME: ${{ github.workspace }}/.mcpp-home
       LAB_ENGINE_DIR: ${{ github.workspace }}/.lab-engine
+      MCPP_SHA: ${{ needs.refs.outputs.mcpp_sha }}
+      PLUGINS_SHA: ${{ needs.refs.outputs.plugins_sha }}
     steps:
       - uses: actions/checkout@v4
 
       - name: References under test
-        id: refs
         run: |
           cat refs.env
           cat refs.env >> "$GITHUB_ENV"
-          . ./refs.env
-          sha=$(git ls-remote https://github.com/mcpp-community/mcpp.git "refs/heads/$MCPP_REF" | cut -f1)
-          [ -n "$sha" ] || { echo "::error::mcpp-community/mcpp has no branch $MCPP_REF"; exit 1; }
-          echo "mcpp_sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "mcpp $MCPP_REF is at $sha"
+          echo "mcpp-community/mcpp at $MCPP_SHA"
+          echo "mcpp-community/mcpp-plugins at $PLUGINS_SHA"
           {
             echo "### ${{ matrix.name }}"
             echo
-            echo "- refs: \`MCPP_REF=$MCPP_REF\`, \`PLUGINS_REF=$PLUGINS_REF\`, \`MCPP_BOOTSTRAP=$MCPP_BOOTSTRAP\`"
+            echo "- refs: \`$(tr '\n' ' ' < refs.env)\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # MCPP_HOME is inside the workspace and the engine built from MCPP_REF is
@@ -78,7 +104,7 @@ jobs:
           path: |
             .mcpp-home
             .lab-engine
-          key: lab-v1-${{ matrix.name }}-${{ env.MCPP_BOOTSTRAP }}-${{ steps.refs.outputs.mcpp_sha }}
+          key: lab-v1-${{ matrix.name }}-${{ env.MCPP_BOOTSTRAP }}-${{ needs.refs.outputs.mcpp_sha }}
           restore-keys: |
             lab-v1-${{ matrix.name }}-${{ env.MCPP_BOOTSTRAP }}-
 
@@ -105,7 +131,7 @@ jobs:
           path: |
             .mcpp-home
             .lab-engine
-          key: lab-v1-${{ matrix.name }}-${{ env.MCPP_BOOTSTRAP }}-${{ steps.refs.outputs.mcpp_sha }}
+          key: lab-v1-${{ matrix.name }}-${{ env.MCPP_BOOTSTRAP }}-${{ needs.refs.outputs.mcpp_sha }}
 
       # The xcode-27 job runs this engine: it cannot build one, because the
       # bootstrap's own link meets the Xcode 27 SDK (mcpp-community/mcpp#669).
@@ -158,7 +184,7 @@ jobs:
   # the first link, for the same reason.
   xcode-27:
     name: xcode-27
-    needs: lab
+    needs: [refs, lab]
     if: ${{ !cancelled() }}
     runs-on: xcode-27
     timeout-minutes: 90
@@ -170,6 +196,8 @@ jobs:
       MCPP_HOME: ${{ github.workspace }}/.mcpp-home
       LAB_ENGINE_DIR: ${{ github.workspace }}/.lab-engine
       GH_TOKEN: ${{ github.token }}
+      MCPP_SHA: ${{ needs.refs.outputs.mcpp_sha }}
+      PLUGINS_SHA: ${{ needs.refs.outputs.plugins_sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -180,9 +208,12 @@ jobs:
         run: |
           cat refs.env
           cat refs.env >> "$GITHUB_ENV"
+          echo "mcpp-community/mcpp at $MCPP_SHA"
+          echo "mcpp-community/mcpp-plugins at $PLUGINS_SHA"
           {
             echo "### xcode-27"
             echo
+            echo "- refs: \`$(tr '\n' ' ' < refs.env)\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore the mcpp home

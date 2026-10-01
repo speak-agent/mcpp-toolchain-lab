@@ -285,3 +285,20 @@ CPP
     echo "-- mcpp.toml"; sed 's/^/     /' mcpp.toml
     echo "-- build.mcpp"; cat -n build.mcpp | sed 's/^/     /'
 }
+
+# clone_at <url> <ref> <sha> <dest>: a shallow clone of <ref>, or of the commit
+# <sha> when one is given. The commits a run measures are resolved once, by the
+# first job, so that every job of the run measures the same ones even when a
+# branch moves while the run is going.
+clone_at() {
+    local url="$1" ref="$2" sha="$3" dest="$4"
+    rm -rf "$dest"
+    if [ -n "$sha" ]; then
+        git init -q "$dest"
+        git -C "$dest" remote add origin "$url"
+        git -C "$dest" fetch -q --depth 1 origin "$sha"
+        git -C "$dest" checkout -q FETCH_HEAD
+    else
+        git clone -q --depth 1 --branch "$ref" "$url" "$dest"
+    fi
+}

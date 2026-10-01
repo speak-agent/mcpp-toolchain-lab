@@ -12,9 +12,14 @@ source "$(dirname "$0")/lib.sh"
 : "${ENGINE_VERSION:?}"
 : "${LAB_ENGINE_DIR:?}"
 
-commit="$(git ls-remote https://github.com/mcpp-community/mcpp.git "refs/heads/$MCPP_REF" | cut -f1)"
+# MCPP_SHA is the commit the first job of the run resolved from MCPP_REF; with
+# none, the branch is resolved here.
+commit="${MCPP_SHA:-}"
+if [ -z "$commit" ]; then
+    commit="$(git ls-remote https://github.com/mcpp-community/mcpp.git "refs/heads/$MCPP_REF" | cut -f1)"
+fi
 [ -n "$commit" ] || { echo "::error::mcpp-community/mcpp has no branch $MCPP_REF"; exit 1; }
-echo "== mcpp-community/mcpp $MCPP_REF is at $commit"
+echo "== mcpp-community/mcpp $MCPP_REF: commit $commit"
 mkdir -p "$LAB_ENGINE_DIR"
 
 if [ -x "$LAB_ENGINE_DIR/mcpp" ] && [ "$(cat "$LAB_ENGINE_DIR/commit" 2>/dev/null || true)" = "$commit" ]; then
@@ -23,8 +28,8 @@ if [ -x "$LAB_ENGINE_DIR/mcpp" ] && [ "$(cat "$LAB_ENGINE_DIR/commit" 2>/dev/nul
 else
     src="$LAB_WORK/mcpp-src"
     rm -rf "$src"
-    git clone --quiet --depth 1 --branch "$MCPP_REF" https://github.com/mcpp-community/mcpp.git "$src"
-    [ "$(git -C "$src" rev-parse HEAD)" = "$commit" ] || echo "note: the branch moved between ls-remote and clone: $(git -C "$src" rev-parse HEAD)"
+    clone_at https://github.com/mcpp-community/mcpp.git "$MCPP_REF" "${MCPP_SHA:-}" "$src"
+    [ "$(git -C "$src" rev-parse HEAD)" = "$commit" ] || echo "note: the clone is at $(git -C "$src" rev-parse HEAD), not $commit"
     commit="$(git -C "$src" rev-parse HEAD)"
     # The clone's .xlings.json pins the mcpp that builds mcpp in that
     # repository's own CI; a build inside the checkout would obey it and install
