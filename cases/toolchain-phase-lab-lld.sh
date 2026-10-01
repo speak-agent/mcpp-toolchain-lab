@@ -29,12 +29,16 @@ restore() {
     echo "-- the managed payload's lld files are restored"
 }
 trap restore EXIT
+# `lld` answers --version under the name ld64.lld only; the name picks the flavour.
+version_of() { "$LAB_PAYLOAD/bin/ld64.lld" --version 2>&1 | head -1; }
+echo "-- the lld the bootstrap links with: $(version_of)"
 for t in $targets; do
     cp -p "$t" "$t.lab-orig"
-    echo "-- replacing $t ($("$t" --version 2>&1 | head -1))"
+    echo "-- replacing $t with the lab's $LAB_TREE/bin/lld"
     cp -f "$LAB_TREE/bin/lld" "$t"
     chmod +x "$t"
-    echo "   with the lab's lld ($("$t" --version 2>&1 | head -1))"
 done
+echo "-- the lld the bootstrap links with now: $(version_of)"
+echo "-- the lab tree's own: $("$LAB_TREE/bin/ld64.lld" --version 2>&1 | head -1)"
 
 source "$LAB_ROOT/cases/toolchain-phase.sh"
