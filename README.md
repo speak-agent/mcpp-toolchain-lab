@@ -61,12 +61,12 @@ The job runs the engine binary built by the `macos-15` job, because building one
 
 ## Results
 
-Run [36887677223](https://github.com/speak-agent/mcpp-toolchain-lab/actions/runs/36887677223) of pull request #1 (conclusion `failure`: one case, see finding 1). The cases did not change in the commits after it, which are documentation only.
+Run [36889621198](https://github.com/speak-agent/mcpp-toolchain-lab/actions/runs/36889621198), a manual dispatch on the branch of pull request #1 (conclusion `success`). Every run of the pull request is listed under its checks; the earlier ones, at earlier engine commits, are the evidence for findings 1 and 2.
 
 | Input | Value |
 | --- | --- |
-| engine | `mcpp-community/mcpp` `feat/build-sources` at `77b632fd0839991fb2b4130783797fafa666341e`; `mcpp --version` prints `mcpp 2026.10.1.3` |
-| plugins | `mcpp-community/mcpp-plugins` `feat/0.19.0-tool-sources` at `11cf1cf02f9118d1279bc15113c36ab375393d52`, package version 0.19.0 |
+| engine | `mcpp-community/mcpp` `feat/build-sources` at `cb918615e81bd297b1997f0f8f29e32c39db8846`; `mcpp --version` prints `mcpp 2026.10.1.3` |
+| plugins | `mcpp-community/mcpp-plugins` `feat/0.19.0-tool-sources` at `789a0bb36c10e3b9a41c15de899cb64ed5024e10`, package version 0.19.0 |
 | bootstrap | released mcpp 2026.10.1.2 |
 | `linux` | `ubuntu-24.04`, image 20260927.320.1; tree from the managed `llvm@22.1.8` payload (clang 22.1.8) |
 | `macos-15` | `macos-15-arm64`, image 20260907.0337.1 (Xcode 16.4); tree from the managed `llvm@22.1.8` payload |
@@ -76,7 +76,7 @@ Run [36887677223](https://github.com/speak-agent/mcpp-toolchain-lab/actions/runs
 | --- | --- | --- | --- |
 | `path-llvm` | PASS | PASS | PASS (lab tree) |
 | `env-path` | PASS | PASS | not run |
-| `launcher-and-ld` | PASS | FAIL (finding 1) | not run |
+| `launcher-and-ld` | PASS | PASS (finding 1, fixed) | not run |
 | `fast-path` | PASS | PASS | not run |
 | `toolchain-phase` | PASS | PASS | KNOWN-RED (#669, `arm64e.x1`; finding 3) |
 | `toolchain-phase-lab-lld` | not run | not run | PASS |
@@ -88,14 +88,14 @@ Nothing was skipped. `not run` marks a case that is not part of that job: `xcode
 
 ### Findings
 
-1. **`tools = { ld = ... }` is ignored on macOS.** The project is
-   `default = { path = "<tree>", launcher = "/usr/bin/env", tools = { ld = "<wrapper that execs ld64.lld>" } }`. `mcpp build` exits 0 and reports the toolchain, and `build.ninja` has the launcher (`cxx = /usr/bin/env <tree>/bin/clang++`), but the link options are
+1. **`tools = { ld = ... }` was ignored on macOS (an engine defect, fixed in engine commit cb918615).** The project is
+   `default = { path = "<tree>", launcher = "/usr/bin/env", tools = { ld = "<wrapper that execs ld64.lld>" } }`. Before the fix `mcpp build` exited 0 and reported the toolchain, and `build.ninja` had the launcher (`cxx = /usr/bin/env <tree>/bin/clang++`), but the link options were
 
    ```
    ldflags   = -isysroot /Applications/Xcode_16.4.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -fuse-ld=lld -mmacosx-version-min=14.0
    ```
 
-   with no `--ld-path=`, and the wrapper, which appends a line to a file each time it runs, never ran. On Linux the same case has `--ld-path=<wrapper>` in `ldflags` and the wrapper runs. In `src/build/flags.cppm` the `--ld-path` is added to `link_toolchain_flags` inside the `isClangWithCfg` branch, and the macOS (`LinkShape::AppleSdk`) link line is built from other parts. The engine prints no diagnostic. The `fast-path` case passes on macOS: touching the wrapper declines the fast path, so the tool is part of the fingerprint although it takes no part in the link. The `build.ninja` evidence was seen at engine commits 11431544, 23c5843f, eb386f65, 7819a28c and 77b632fd; the wrapper's own record of running was added to the case later and is from 77b632fd.
+   with no `--ld-path=`, and the wrapper, which appends a line to a file each time it runs, never ran. On Linux the same case had `--ld-path=<wrapper>` in `ldflags` and the wrapper ran. The cause was in `src/build/flags.cppm`: the `--ld-path` was appended inside the Linux clang branch, the only one that consumed `link_toolchain_flags`, so the stated linker entered the fingerprint (the `fast-path` case passed on macOS: touching the wrapper declined the fast path) and took no part in the link, and the engine printed no diagnostic. The `build.ninja` evidence was seen at engine commits 11431544, 23c5843f, eb386f65, 7819a28c and 77b632fd (runs 36879774963 to 36887677223); the wrapper's own record of running was added to the case later and is from 77b632fd, run 36887677223, which failed with `the wrapper ran during the link: no`. At cb918615 the link options end in `--ld-path=<wrapper>` and the wrapper runs, on `macos-15` (run 36889621198). The engine's own end-to-end test for this (e2e 875) asserts `--ld-path` but skips on a host that has no LLVM payload installed, which is what the macOS CI of the engine is, so it never ran where the defect was; this lab runs the case there. A gcc toolchain that states `ld` is refused by the engine from cb918615, because gcc selects a linker by the name `ld` in a `-B` directory; the lab has no gcc case.
 2. **`mcpp.lock` does not record the toolchain.** The case first expected a `local` entry in `mcpp.lock`, or the word in the message of a build without the tree. A build with a path-named toolchain and the dependency `cmdline = "0.0.2"` writes a lock that holds only `[package."cmdline"]` (`namespace = "mcpplibs"`, `version = "0.0.2"`, `source = "index+mcpplibs@0.0.2"`, `hash = "fnv1a:f5015fdab7dc3807"`), and `resolution.json` holds `sources[]` with `{subject: "toolchain.build", class: "custom", value: <tree>}`. With the tree moved away, `mcpp build` exits 2 with
 
    ```
