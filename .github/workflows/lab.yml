@@ -1,0 +1,291 @@
+name: lab
+
+# Validates, from a consumer's point of view and on GitHub-hosted runners, that a
+# project can use a toolchain mcpp did not install, and that a build program can
+# choose it (mcpp-community/mcpp#755). The references under test are in
+# refs.env, so a pull request's diff shows what it measures.
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: lab-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The version the engine built from MCPP_REF must print. The branch under test
+  # is 2026.10.1.3; a branch that prints another version is not the one this
+  # repository was written against, and the job says so before any case runs.
+  ENGINE_VERSION: 2026.10.1.3
+  # The managed LLVM the toolchain tree is made from. macOS installs it itself
+  # (mcpp's own manifest names llvm@22.1.8 there); on Linux the engine builds
+  # with gcc, so the job installs it.
+  LAB_LLVM_SPEC: llvm@22.1.8
+
+jobs:
+  # THE COMMITS A RUN MEASURES are resolved once, here, from the references in
+  # refs.env, and every job checks out those commits: a branch under review moves
+  # while a run is going, and two jobs of one run must not measure two states.
+  refs:
+    name: refs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mcpp_sha: ${{ steps.resolve.outputs.mcpp_sha }}
+      plugins_sha: ${{ steps.resolve.outputs.plugins_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the references under test
+        id: resolve
+        run: |
+          set -euo pipefail
+          . ./refs.env
+          cat refs.env
+          mcpp_sha=$(git ls-remote https://github.com/mcpp-community/mcpp.git "refs/heads/$MCPP_REF" | cut -f1)
+          plugins_sha=$(git ls-remote https://github.com/mcpp-community/mcpp-plugins.git "refs/heads/$PLUGINS_REF" | cut -f1)
+          [ -n "$mcpp_sha" ] || { echo "::error::mcpp-community/mcpp has no branch $MCPP_REF"; exit 1; }
+          [ -n "$plugins_sha" ] || { echo "::error::mcpp-community/mcpp-plugins has no branch $PLUGINS_REF"; exit 1; }
+          echo "mcpp $MCPP_REF -> $mcpp_sha"
+          echo "mcpp-plugins $PLUGINS_REF -> $plugins_sha"
+          echo "mcpp_sha=$mcpp_sha" >> "$GITHUB_OUTPUT"
+          echo "plugins_sha=$plugins_sha" >> "$GITHUB_OUTPUT"
+
+  lab:
+    name: ${{ matrix.name }}
+    needs: refs
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            runs-on: ubuntu-24.04
+          - name: macos-15
+            runs-on: macos-15
+    defaults:
+      run:
+        shell: bash
+    env:
+      LAB_PLATFORM: ${{ matrix.name }}
+      MCPP_HOME: ${{ github.workspace }}/.mcpp-home
+      LAB_ENGINE_DIR: ${{ github.workspace }}/.lab-engine
+      MCPP_SHA: ${{ needs.refs.outputs.mcpp_sha }}
+      PLUGINS_SHA: ${{ needs.refs.outputs.plugins_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: References under test
+        run: |
+          cat refs.env
+          cat refs.env >> "$GITHUB_ENV"
+          echo "mcpp-community/mcpp at $MCPP_SHA"
+          echo "mcpp-community/mcpp-plugins at $PLUGINS_SHA"
+          {
+            echo "### ${{ matrix.name }}"
+            echo
+            echo "- refs: \`$(tr '\n' ' ' < refs.env)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # MCPP_HOME is inside the workspace and the engine built from MCPP_REF is
+      # kept beside it, both under one key that names the commit: a run whose
+      # commit has not moved builds nothing. A run on a newer commit restores the
+      # home (toolchains, caches) by the prefix and rebuilds the engine.
+      - name: Restore the mcpp home and the engine
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .mcpp-home
+            .lab-engine
+          key: lab-v1-${{ matrix.name }}-${{ env.MCPP_BOOTSTRAP }}-${{ needs.refs.outputs.mcpp_sha }}
+          restore-keys: |
+            lab-v1-${{ matrix.name }}-${{ env.MCPP_BOOTSTRAP }}-
+
+      - name: Install the released mcpp
+        run: bash scripts/install-bootstrap.sh
+
+      - name: Build mcpp at MCPP_REF with it
+        timeout-minutes: 100
+        run: bash scripts/build-engine.sh
+
+      - name: Clone mcpp-plugins at PLUGINS_REF
+        run: bash scripts/clone-plugins.sh
+
+      # THE TOOLCHAIN UNDER TEST, from the managed payload, without the files
+      # mcpp generates (see scripts/make-tree.sh).
+      - name: The toolchain tree
+        id: tree
+        run: bash scripts/make-tree.sh
+
+      - name: Save the mcpp home and the engine
+        if: ${{ success() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .mcpp-home
+            .lab-engine
+          key: lab-v1-${{ matrix.name }}-${{ env.MCPP_BOOTSTRAP }}-${{ needs.refs.outputs.mcpp_sha }}
+
+      # The xcode-27 job runs this engine: it cannot build one, because the
+      # bootstrap's own link meets the Xcode 27 SDK (mcpp-community/mcpp#669).
+      - name: Keep the engine for the xcode-27 job
+        if: ${{ success() && matrix.name == 'macos-15' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-macos-15
+          path: .lab-engine/mcpp
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: "case: path-llvm"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh path-llvm
+      - name: "case: env-path"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh env-path
+      - name: "case: launcher-and-ld"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh launcher-and-ld
+      - name: "case: fast-path"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh fast-path
+      - name: "case: toolchain-phase"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh toolchain-phase
+      - name: "case: phase-refuses-a-flag"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh phase-refuses-a-flag
+      - name: "case: managed-only"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh managed-only
+      - name: "case: lock-local"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh lock-local
+
+  # macOS 27 with Xcode 27 (the preview label `xcode-27`; there is no
+  # `macos-27` label). Two cases: path-llvm and toolchain-phase.
+  #
+  # THE TOOLCHAIN TREE is the release asset of speak-agent/llvm-macos27-lab when
+  # it is published (the lld in it carries upstream's arm64e.x1 fix, which linking
+  # against the Xcode 27 SDK needs); otherwise it is the managed payload's tree,
+  # whose lld cannot read the SDK's text stubs, and the link is expected to fail
+  # with `arm64e.x1`. That outcome is the recorded state of
+  # mcpp-community/mcpp#669 and is reported as KNOWN-RED, not as a failure of the
+  # feature under test.
+  #
+  # THE ENGINE is the one the macos-15 job built: building one here would fail at
+  # the first link, for the same reason.
+  xcode-27:
+    name: xcode-27
+    needs: [refs, lab]
+    if: ${{ !cancelled() }}
+    runs-on: xcode-27
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      LAB_PLATFORM: xcode-27
+      MCPP_HOME: ${{ github.workspace }}/.mcpp-home
+      LAB_ENGINE_DIR: ${{ github.workspace }}/.lab-engine
+      GH_TOKEN: ${{ github.token }}
+      MCPP_SHA: ${{ needs.refs.outputs.mcpp_sha }}
+      PLUGINS_SHA: ${{ needs.refs.outputs.plugins_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The image is macOS 27
+        run: bash scripts/xcode-image.sh
+
+      - name: References under test
+        run: |
+          cat refs.env
+          cat refs.env >> "$GITHUB_ENV"
+          echo "mcpp-community/mcpp at $MCPP_SHA"
+          echo "mcpp-community/mcpp-plugins at $PLUGINS_SHA"
+          {
+            echo "### xcode-27"
+            echo
+            echo "- refs: \`$(tr '\n' ' ' < refs.env)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Restored, and saved right after the toolchain tree and before any case:
+      # toolchain-phase-lab-lld edits the managed payload for the length of its
+      # run, and what is cached must be the payload as installed.
+      - name: Restore the mcpp home
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .mcpp-home
+          key: lab-v1-xcode-27-${{ hashFiles('refs.env') }}
+          restore-keys: |
+            lab-v1-xcode-27-
+
+      - name: Install the released mcpp
+        run: bash scripts/install-bootstrap.sh
+
+      - name: The engine the macos-15 job built
+        uses: actions/download-artifact@v4
+        with:
+          name: engine-macos-15
+          path: .lab-engine
+
+      - name: Use that engine
+        run: |
+          set -euo pipefail
+          source scripts/lib.sh
+          chmod +x "$LAB_ENGINE_DIR/mcpp"
+          version="$("$LAB_ENGINE_DIR/mcpp" --version | head -1)"
+          echo "$version"
+          [ "$version" = "mcpp $ENGINE_VERSION" ] || { echo "::error::the engine prints '$version', expected 'mcpp $ENGINE_VERSION'"; exit 1; }
+          otool -L "$LAB_ENGINE_DIR/mcpp"
+          lab_export MCPP "$LAB_ENGINE_DIR/mcpp"
+          lab_summary "- engine: \`$version\`, built by the macos-15 job"
+
+      - name: Clone mcpp-plugins at PLUGINS_REF
+        run: bash scripts/clone-plugins.sh
+
+      - name: Look for the lab toolchain release
+        run: bash scripts/fetch-lab-toolchain.sh
+
+      - name: The toolchain tree
+        id: tree
+        run: bash scripts/make-tree.sh
+
+      - name: Save the mcpp home
+        if: ${{ success() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .mcpp-home
+          key: lab-v1-xcode-27-${{ hashFiles('refs.env') }}
+
+      - name: "case: path-llvm"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        env:
+          LAB_KNOWN_RED: ${{ env.LAB_TREE_SOURCE != 'lab-asset' && 'mcpp-community/mcpp#669' || '' }}
+          LAB_KNOWN_RED_MARK: arm64e.x1
+        run: bash scripts/case.sh path-llvm
+
+      # The bootstrap toolchain is a managed spec, so the build program is linked
+      # by the managed LLVM's lld whatever tree the toolchain phase states.
+      - name: "case: toolchain-phase"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        env:
+          LAB_KNOWN_RED: mcpp-community/mcpp#669
+          LAB_KNOWN_RED_MARK: arm64e.x1
+        run: bash scripts/case.sh toolchain-phase
+
+      # An extra case, only when the tree is the lab asset: the toolchain-phase
+      # case with the bootstrap's lld replaced by the lab's lld for its duration,
+      # which removes the one cause of the KNOWN-RED above and shows whether the
+      # toolchain phase works on the image once the bootstrap can link.
+      - name: "case: toolchain-phase-lab-lld"
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        run: bash scripts/case.sh toolchain-phase-lab-lld
